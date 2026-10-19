@@ -1,0 +1,250 @@
+// Author: shulamit
+
+// Source: Program.cs
+using System.CommandLine;
+using System.Text;
+var bundleCommand = new Command("bundle", "Bundle source code files");
+var outputOption = new Option<FileInfo>("--output", "-o")
+{
+    Description = "Path and name of the bundle file"
+};
+outputOption.AcceptLegalFilePathsOnly();
+var languageOption = new Option<string[]>("--language", "-l")
+{
+    Description = "Programming languages to include",
+    Required = true,
+    AllowMultipleArgumentsPerToken = true
+};
+var noteOption = new Option<bool>("--note", "-n")
+{
+    Description = "Add the source file path as a comment"
+};
+var sortOption = new Option<string>("--sort", "-s")
+{
+    Description = "Sort files by 'name' or 'type'",
+    DefaultValueFactory = _ => "name"
+};
+sortOption.AcceptOnlyFromAmong("name", "type");
+var removeEmptyLinesOption = new Option<bool>("--remove-empty-lines", "-r")
+{
+    Description = "Remove empty lines from the source code"
+};
+var authorOption = new Option<string>("--author", "-a")
+{
+    Description = "Name of the bundle author"
+};
+bundleCommand.Options.Add(outputOption);
+bundleCommand.Options.Add(languageOption);
+bundleCommand.Options.Add(noteOption);
+bundleCommand.Options.Add(sortOption);
+bundleCommand.Options.Add(removeEmptyLinesOption);
+bundleCommand.Options.Add(authorOption);
+bundleCommand.SetAction(parseResult =>
+{
+    FileInfo? output = parseResult.GetValue(outputOption);
+    string[]? languages = parseResult.GetValue(languageOption);
+    bool note = parseResult.GetValue(noteOption);
+    string? sort = parseResult.GetValue(sortOption);
+    bool removeEmptyLines= parseResult.GetValue(removeEmptyLinesOption);
+    string? author = parseResult.GetValue(authorOption);
+    if (output == null)
+    {
+        Console.WriteLine("Error: please specify an output file using --output");
+        return;
+    }
+    if (languages == null || languages.Length == 0)
+    {
+        Console.WriteLine("Error: please specify at least one language using --language");
+        return;
+    }
+    if (author != null && string.IsNullOrWhiteSpace(author))
+    {
+        Console.WriteLine("Error: author name cannot be empty");
+        return;
+    }
+    try
+    {
+        List<string> extensions = GetExtensions(languages);
+        List<string> files = GetCodeFiles(extensions);
+        if (files.Count == 0)
+        {
+            Console.WriteLine("No code files found for the selected languages");
+            return;
+        }
+        if (sort == "type")
+        {
+            files = files
+                .OrderBy(file => Path.GetExtension(file))
+                .ThenBy(file => Path.GetFileName(file))
+                .ToList();
+        }
+        else
+        {
+            files = files.OrderBy(file => Path.GetFileName(file)).ToList();
+        }
+        StringBuilder content = new();
+        if (!string.IsNullOrWhiteSpace(author))
+        {
+            content.AppendLine($"// Author: {author}");
+            content.AppendLine();
+        }
+        foreach (string file in files)
+        {
+            if (note)
+            {
+                string relativePath = Path.GetRelativePath(Directory.GetCurrentDirectory(), file);
+                content.AppendLine($"// Source: {relativePath}");
+            }
+            string code = "";
+            if (removeEmptyLines)
+            {
+                string[] lines = File.ReadAllLines(file);
+                string[] nonEmptyLines = lines.Where(line => !string.IsNullOrWhiteSpace(line)).ToArray();
+                code = string.Join(Environment.NewLine, nonEmptyLines);
+            }
+            else
+            {
+                code = File.ReadAllText(file);
+            }
+            content.AppendLine(code);
+            content.AppendLine();
+        }
+        WriteBundleFile(output, content.ToString());
+    }
+    catch (ArgumentException ex)
+    {
+        Console.WriteLine($"Error: {ex.Message}");
+    }
+    catch (IOException ex)
+    {
+        Console.WriteLine($"Error while searching files: {ex.Message}");
+    }
+    catch (UnauthorizedAccessException ex)
+    {
+        Console.WriteLine($"Error accessing files: {ex.Message}");
+    }
+});
+var createRspCommand = new Command("create-rsp", "Create a response file");
+createRspCommand.SetAction(parseResult =>
+{
+    List<string> command = new();
+    command.Add("bundle");
+    string? language;
+    do
+    {
+        Console.Write("Languages to include (e.g. cs js, or all): ");
+        language = Console.ReadLine();
+    }
+    while (string.IsNullOrWhiteSpace(language));
+    string? output;
+    do
+    {
+        Console.Write("Output file name: ");
+        output = Console.ReadLine();
+    }
+    while (string.IsNullOrWhiteSpace(output));
+    bool note = AskYesNo("Add source file notes?");
+    string? sort;
+    do
+    {
+        Console.Write("Sort by (name/type, leave empty for name): ");
+        sort = Console.ReadLine()?.Trim().ToLower();
+    }
+    while (sort != "" && sort != "name" && sort != "type");
+    bool removeEmptyLines = AskYesNo("Remove empty lines?");
+    Console.Write("Author name (leave empty to skip): ");
+    string? author = Console.ReadLine()?.Trim();
+    command.Add($"--language {language}");
+    command.Add($"--output \"{output}\"");
+    if (note)
+        command.Add("--note");
+    if (!string.IsNullOrEmpty(sort))
+        command.Add($"--sort {sort}");
+    if (removeEmptyLines)
+        command.Add("--remove-empty-lines");
+    if (!string.IsNullOrEmpty(author))
+        command.Add($"--author \"{author}\"");
+    string fullCommand = string.Join(" ", command);
+    File.WriteAllText("bundle.rsp", fullCommand);
+    Console.WriteLine("Response file created: bundle.rsp");
+});
+var rootCommand = new RootCommand("File Bundler CLI");
+rootCommand.Subcommands.Add(bundleCommand);
+rootCommand.Subcommands.Add(createRspCommand);
+return rootCommand.Parse(args).Invoke();
+static bool AskYesNo(string question)
+{
+    string? answer;
+    do
+    {
+        Console.Write($"{question} (y/n): ");
+        answer = Console.ReadLine()?.Trim().ToLower();
+    }
+    while (answer != "y" && answer != "n");
+    return answer == "y";
+}
+static List<string> GetExtensions(string[] languages)
+{
+    Dictionary<string, string> languageExtensions = new()
+    {
+        { "cs", ".cs" },
+        { "java", ".java" },
+        { "python", ".py" },
+        { "js", ".js" },
+        { "ts", ".ts" },
+        { "html", ".html" },
+        { "css", ".css" },
+        { "sql", ".sql" },
+        { "c", ".c" },
+        { "cpp", ".cpp" }
+    };
+    List<string> extensions = new();
+    foreach (string language in languages)
+    {
+        string lang = language.ToLower();
+        if (lang == "all")
+            return languageExtensions.Values.ToList();
+        if (!languageExtensions.ContainsKey(lang))
+            throw new ArgumentException($"Unsupported language: {language}");
+        extensions.Add(languageExtensions[lang]);
+    }
+    return extensions;
+}
+static List<string> GetCodeFiles(List<string> extensions)
+{
+    string currentDirectory = Directory.GetCurrentDirectory();
+    string[] excludedFolders = { "bin", "obj", "debug", "release", "node_modules", ".git", ".vs" };
+    string[] allFiles = Directory.GetFiles(currentDirectory, "*", SearchOption.AllDirectories);
+    List<string> codeFiles = new();
+    foreach (string file in allFiles)
+    {
+        // 1. האם הסיומת מתאימה?
+        string extension = Path.GetExtension(file).ToLower();
+        if (!extensions.Contains(extension))
+            continue;
+        // 2. האם הקובץ נמצא בתוך תיקייה שצריך לדלג עליה?
+        string relativePath = Path.GetRelativePath(currentDirectory, file);
+        string[] parts = relativePath.Split(Path.DirectorySeparatorChar);
+        if (parts.Any(part => excludedFolders.Contains(part.ToLower())))
+            continue;
+        codeFiles.Add(file);
+    }
+    return codeFiles;
+}
+static void WriteBundleFile(FileInfo output, string content)
+{
+    try
+    {
+        File.WriteAllText(output.FullName, content);
+        Console.WriteLine($"File was created: {output.FullName}");
+    }
+    catch (DirectoryNotFoundException)
+    {
+        Console.WriteLine("Error: the folder in the path does not exist");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error: could not create the file. {ex.Message}");
+    }
+}
+
